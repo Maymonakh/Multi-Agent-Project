@@ -1,4 +1,12 @@
 .env
+venv/
+.venv/
+__pycache__/
+*.pyc
+documents/*
+!documents/.gitkeep
+chroma_db/
+.DS_Store
 .venv/
 __pycache__/
 *.pyc
