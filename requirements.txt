@@ -1,0 +1,6 @@
+streamlit
+pydantic
+python-dotenv
+langchain-openrouter
+redis
+sentence-transformers
