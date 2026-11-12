@@ -8,6 +8,9 @@ documents/*
 chroma_db/
 .DS_Store
 .venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
 chroma_db/
+.DS_Store

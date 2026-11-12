@@ -1,0 +1,28 @@
+Machine Learning Fundamentals
+
+Machine learning is a field of artificial intelligence
+that allows computers to learn from data.
+
+Supervised Learning
+
+Supervised learning uses labeled training data.
+The model learns from examples that contain inputs
+and their expected outputs.
+
+Unsupervised Learning
+
+Unsupervised learning works with unlabeled data.
+It tries to discover hidden patterns and groups
+within the available information.
+
+Model Evaluation
+
+Machine learning models need evaluation to measure
+their performance. Common evaluation metrics include
+accuracy, precision, recall, and F1-score.
+
+Conclusion
+
+Machine learning is used in many applications,
+including recommendation systems, image recognition,
+and natural language processing.
