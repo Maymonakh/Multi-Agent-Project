@@ -1,6 +1,12 @@
+<<<<<<< HEAD
 streamlit
 pydantic
 python-dotenv
 langchain-openrouter
 redis
 sentence-transformers
+=======
+pydantic
+python-dotenv
+langchain-openrouter
+>>>>>>> origin/master
