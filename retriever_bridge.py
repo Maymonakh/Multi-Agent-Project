@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -278,11 +279,72 @@ def initialize() -> None:
     _ensure_initialized()
 
 
+def _extract_agent_text(agent_result) -> str:
+
+    if not isinstance(agent_result, dict):
+        raise RuntimeError(
+            "Retriever Agent returned an unexpected result type: "
+            f"{type(agent_result).__name__}."
+        )
+
+    messages = agent_result.get("messages", [])
+    for message in reversed(messages):
+        message_type = getattr(message, "type", "")
+        if message_type != "ai":
+            continue
+
+        content = getattr(message, "content", "")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(str(block.get("text", "")))
+            combined = "\n".join(part for part in text_parts if part.strip())
+            if combined.strip():
+                return combined.strip()
+
+    raise RuntimeError(
+        "Retriever Agent did not return a final AI message containing JSON."
+    )
+
+
+def _parse_agent_bundle(agent_result) -> EvidenceBundle:
+    """Validate the agent's final JSON against the shared EvidenceBundle schema."""
+
+    raw_text = _extract_agent_text(agent_result)
+    cleaned_text = re.sub(
+        r"^```(?:json)?\s*|\s*```$",
+        "",
+        raw_text.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+
+    try:
+        payload = json.loads(cleaned_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "Retriever Agent returned invalid JSON. "
+            f"Output: {raw_text[:1000]}"
+        ) from error
+
+    try:
+        return EvidenceBundle.model_validate(payload)
+    except Exception as error:
+        raise RuntimeError(
+            "Retriever Agent JSON does not match the EvidenceBundle schema. "
+            f"Output: {raw_text[:1000]}"
+        ) from error
+
+
 def retrieve(
     query: str,
     chat_history: list | None = None,
+    llm=None,
 ) -> EvidenceBundle:
-    """Retrieve a typed EvidenceBundle for the Analyst Agent."""
+    """Run the LangChain Retriever Agent and return a typed EvidenceBundle."""
 
     if not query or not query.strip():
         raise ValueError("The retrieval query must not be empty.")
@@ -292,20 +354,38 @@ def retrieve(
     if not _chunks:
         return EvidenceBundle(evidences=[])
 
-    from retriever_agent.retriever import retrieve_evidence
+    from retriever_agent.agent import create_retriever_agent
+    from shared.llm_config import get_llm
 
+    active_llm = llm if llm is not None else get_llm()
     context = build_conversation_context(
         chat_history,
-        query,
+        current_question=query,
     )
 
-    return retrieve_evidence(
-        question=query,
+    user_message = (
+        "Conversation context:\n"
+        + (context if context else "(No previous conversation context.)")
+        + "\n\nLatest question:\n"
+        + query.strip()
+    )
+
+    agent = create_retriever_agent(
         chunks=_chunks,
         vector_store=_vector_store,
-        conversation_context=context,
-        use_query_rewriting=True,
+        llm=active_llm,
     )
+
+    try:
+        result = agent.invoke({
+            "messages": [{"role": "user", "content": user_message}]
+        })
+    except Exception as error:
+        raise RuntimeError(
+            f"LangChain Retriever Agent execution failed: {error}"
+        ) from error
+
+    return _parse_agent_bundle(result)
 
 
 def ingest(file_path: str) -> str:

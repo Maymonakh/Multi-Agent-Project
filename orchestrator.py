@@ -54,14 +54,14 @@ def ask(
     llm=None,
     cache: SemanticCache | None = None,
 ) -> Reply:
-    """Run the complete question-answering workflow."""
+    """Run Cache -> Retriever Agent -> Analyst -> Answer."""
     if not question or not question.strip():
         return Reply(answer="Please enter a question.")
 
     active_cache = cache if cache is not None else semantic_cache
     cache_question, cache_scope = _cache_inputs(question, chat_history)
 
-    # 1. Check semantic cache before creating or calling an LLM.
+    # 1. Check semantic cache before invoking any agents.
     try:
         hit = active_cache.get(cache_question, scope=cache_scope)
     except Exception as error:
@@ -75,17 +75,28 @@ def ask(
             cached=True,
         )
 
-    # 2. Resolve the shared LLM once and pass the same instance to both agents.
+    # 2. Resolve one model instance and share it across all agent stages.
     active_llm = llm if llm is not None else get_llm()
 
-    # 3. Retriever -> Analyst (including feedback loop) -> Answer.
-    bundle = retriever_bridge.retrieve(question, chat_history)
+    bundle = retriever_bridge.retrieve(
+        question,
+        chat_history,
+        llm=active_llm,
+    )
+    def retrieve_follow_up(follow_up_query: str):
+        return retriever_bridge.retrieve(
+            follow_up_query,
+            chat_history,
+            llm=active_llm,
+        )
+
     analysis = run_analyst(
         question,
         bundle,
-        retriever_bridge.retrieve,
+        retrieve_follow_up,
         llm=active_llm,
     )
+
     answer, answer_ok = run_answer(
         question,
         analysis,
