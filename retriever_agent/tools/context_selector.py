@@ -1,6 +1,8 @@
 
 import json
 
+from retriever_agent.tools.json_utils import parse_evidence_json
+
 from langchain_core.tools import tool
 
 
@@ -17,8 +19,8 @@ def parse_evidences(evidences):
             )
 
         try:
-            evidences = json.loads(evidences)
-        except json.JSONDecodeError as exc:
+            evidences = parse_evidence_json(evidences)
+        except ValueError as exc:
             raise ValueError(
                 f"Context Selector received invalid JSON: {exc}"
             ) from exc

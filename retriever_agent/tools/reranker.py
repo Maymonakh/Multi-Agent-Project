@@ -1,5 +1,7 @@
 
 import json
+
+from retriever_agent.tools.json_utils import parse_evidence_json
 import re
 from functools import lru_cache
 
@@ -29,8 +31,8 @@ def parse_evidences(evidences):
             )
 
         try:
-            evidences = json.loads(evidences)
-        except json.JSONDecodeError as exc:
+            evidences = parse_evidence_json(evidences)
+        except ValueError as exc:
             raise ValueError(
                 f"Reranker received invalid JSON: {exc}"
             ) from exc
