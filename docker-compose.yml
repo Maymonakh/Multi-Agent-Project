@@ -1,19 +1,13 @@
 services:
   redis:
     image: redis:7-alpine
-
-  app:
-    build: .
+    container_name: multi-agent-redis
     ports:
-      - "8501:8501"
-    env_file: .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+      - "6379:6379"
     volumes:
-      - ./documents:/app/documents
-      - hf_cache:/root/.cache/huggingface
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
 
 volumes:
-  hf_cache:
+  redis_data:

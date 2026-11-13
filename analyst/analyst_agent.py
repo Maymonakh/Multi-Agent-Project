@@ -1,6 +1,7 @@
 import re
 from typing import Callable
 from shared.schemas import Evidence, EvidenceBundle
+from shared.llm_config import get_llm
 from utils import format_evidence
 from analyst.schemas import AnalystDecision, AnalysisResult, Metric
 from analyst.tools.table_extractor import extract_tables
@@ -54,6 +55,8 @@ def decide(llm, question: str, evidences: list[Evidence]) -> AnalystDecision:
         reply = llm.invoke(JSON_PROMPT.format(question=question, evidence=evidence_text))
         text = reply.content if hasattr(reply, "content") else str(reply)
         match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            raise ValueError("The model did not return a JSON object.")
         return AnalystDecision.model_validate_json(match.group(0))
     except Exception as error:
         print("JSON fallback failed:", error)
@@ -65,37 +68,50 @@ def decide(llm, question: str, evidences: list[Evidence]) -> AnalystDecision:
 
 def merge(old: list[Evidence], new: list[Evidence]) -> list[Evidence]:
     seen = {(e.document, e.page, e.content) for e in old}
-    return old + [e for e in new if (e.document, e.page, e.content) not in seen]
+    return old + [
+        evidence for evidence in new
+        if (evidence.document, evidence.page, evidence.content) not in seen
+    ]
 
 
 def fill_pages(metrics: list[Metric], evidences: list[Evidence]) -> list[Metric]:
-    """If the LLM forgot the page, find it in the evidence (needed for citations)."""
-    for m in metrics:
-        if m.page is None:
-            number = f"{m.value:g}"
-            for e in evidences:
-                if e.document == m.document and number in e.content:
-                    m.page = e.page
+    """Fill a missing citation page only when the value is found in that source."""
+    for metric in metrics:
+        if metric.page is None:
+            number = f"{metric.value:g}"
+            for evidence in evidences:
+                if (
+                    evidence.document == metric.document
+                    and number in evidence.content
+                ):
+                    metric.page = evidence.page
                     break
     return metrics
 
 
-def run_analyst(question: str,
-                bundle: EvidenceBundle,
-                retrieve: Callable[[str], EvidenceBundle],
-                llm=None,
-                max_loops: int = MAX_LOOPS) -> AnalysisResult:
-    if llm is None:
-        from shared.llm_config import llm  # real LLM
-
+def run_analyst(
+    question: str,
+    bundle: EvidenceBundle,
+    retrieve: Callable[[str], EvidenceBundle],
+    llm=None,
+    max_loops: int = MAX_LOOPS,
+) -> AnalysisResult:
+    active_llm = llm if llm is not None else get_llm()
     evidences = list(bundle.evidences)
 
-    # Feedback loop: ask the Retriever for more until enough (or max loops)
     for loop in range(max_loops + 1):
-        decision = decide(llm, question, evidences)
-        if decision.failed or decision.enough_evidence or not decision.missing_query or loop == max_loops:
+        decision = decide(active_llm, question, evidences)
+
+        if (
+            decision.failed
+            or decision.enough_evidence
+            or not decision.missing_query
+            or loop == max_loops
+        ):
             break
-        evidences = merge(evidences, search_more(decision.missing_query, retrieve))
+
+        additional_evidence = search_more(decision.missing_query, retrieve)
+        evidences = merge(evidences, additional_evidence)
 
     metrics = fill_pages(decision.metrics, evidences)
 

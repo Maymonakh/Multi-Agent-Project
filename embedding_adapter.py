@@ -1,11 +1,7 @@
-"""One function: text -> vector. Used only by the semantic cache.
-Better: use the SAME embedding model as Person A (src/embeddings.py)."""
-_model = None
+"""Use the same embedding model as the Retriever's Chroma vector store."""
 
 
 def embed(text: str) -> list[float]:
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-    return _model.encode(text).tolist()
+    from retriever_agent.vector_store import get_embeddings
+
+    return get_embeddings().embed_query(text)
