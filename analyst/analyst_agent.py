@@ -1,15 +1,12 @@
-import re
-from typing import Callable
+import json
 from shared.schemas import Evidence, EvidenceBundle
-from shared.llm_config import get_llm
 from utils import format_evidence
 from analyst.schemas import AnalystDecision, AnalysisResult, Metric
 from analyst.tools.table_extractor import extract_tables
 from analyst.tools.document_comparison import compare_documents
 from analyst.tools.data_analysis import analyze_metrics
-from analyst.tools.search_more import search_more
 
-MAX_LOOPS = 2  # how many times the Analyst may ask the Retriever for more evidence
+MAX_LOOPS = 2  # how many times the Analyst may ask the Retriever for more evidence (used by the graph)
 
 PROMPT = """You are the Analyst Agent. Use ONLY the evidence below.
 
@@ -22,6 +19,8 @@ Tasks:
 1. Decide if the evidence is enough to answer the question.
    If NOT enough: enough_evidence=false and write a short, specific search query in missing_query.
 2. If the question needs numbers, list them in metrics (name, document, page, value).
+   value MUST be a plain number (92, 0.91). Never put text or formulas such as "O(n^2)" in
+   metrics: non-numeric facts (complexity, methods, ...) go into similarities / differences.
    Copy document and page from the evidence line. Do NOT calculate anything yourself:
    Python will do the calculation later. If the needed numbers are in the evidence,
    enough_evidence must be true.
@@ -54,10 +53,11 @@ def decide(llm, question: str, evidences: list[Evidence]) -> AnalystDecision:
     try:
         reply = llm.invoke(JSON_PROMPT.format(question=question, evidence=evidence_text))
         text = reply.content if hasattr(reply, "content") else str(reply)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
+        start = text.find("{")
+        if start < 0:
             raise ValueError("The model did not return a JSON object.")
-        return AnalystDecision.model_validate_json(match.group(0))
+        payload, _ = json.JSONDecoder().raw_decode(text[start:])
+        return AnalystDecision.model_validate(payload)
     except Exception as error:
         print("JSON fallback failed:", error)
 
@@ -89,33 +89,14 @@ def fill_pages(metrics: list[Metric], evidences: list[Evidence]) -> list[Metric]
     return metrics
 
 
-def run_analyst(
-    question: str,
-    bundle: EvidenceBundle,
-    retrieve: Callable[[str], EvidenceBundle],
-    llm=None,
-    max_loops: int = MAX_LOOPS,
+def finalize_analysis(
+    decision: AnalystDecision,
+    evidences: list[Evidence],
 ) -> AnalysisResult:
-    active_llm = llm if llm is not None else get_llm()
-    evidences = list(bundle.evidences)
-
-    for loop in range(max_loops + 1):
-        decision = decide(active_llm, question, evidences)
-
-        if (
-            decision.failed
-            or decision.enough_evidence
-            or not decision.missing_query
-            or loop == max_loops
-        ):
-            break
-
-        additional_evidence = search_more(decision.missing_query, retrieve)
-        evidences = merge(evidences, additional_evidence)
-
+    """Run the deterministic Analyst tools (tables, comparison, calculations) once the
+    evidence loop has finished."""
     metrics = fill_pages(decision.metrics, evidences)
 
-    # Tools (plain Python)
     return AnalysisResult(
         enough_evidence=decision.enough_evidence,
         reasoning=decision.reasoning,

@@ -1,4 +1,5 @@
 import json
+import re
 from analyst.schemas import AnalysisResult
 from shared.llm_config import get_llm
 from utils import format_evidence
@@ -25,6 +26,12 @@ Rules:
   If the question is in English, answer in English only. Never use any other language."""
 
 
+NO_EVIDENCE = {
+    "en": "I could not find information about this in the uploaded documents.",
+    "ar": "لم أجد معلومات عن هذا السؤال في المستندات المرفوعة.",
+}
+
+
 def run_answer(
     question: str,
     analysis: AnalysisResult,
@@ -37,8 +44,13 @@ def run_answer(
             False,
         )
 
-    active_llm = llm if llm is not None else get_llm()
     evidences = analysis.evidence.evidences
+
+    if not evidences:   # nothing was retrieved: no reason to spend an LLM call
+        language = "ar" if re.search(r"[\u0600-\u06FF]", question) else "en"
+        return NO_EVIDENCE[language], True
+
+    active_llm = llm if llm is not None else get_llm()
 
     limit_note = (
         "Answer fully."

@@ -1,11 +1,11 @@
 import hashlib
 from pathlib import Path
 
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 
-DB_PATH = Path(__file__).resolve().parent.parent / "chroma_db"
-COLLECTION_NAME = "external_knowledge"
+from retriever_agent.config import COLLECTION_NAME, DB_PATH, EMBEDDING_MODEL
+
 _embeddings = None
 
 
@@ -14,7 +14,7 @@ def get_embeddings():
     global _embeddings
     if _embeddings is None:
         _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_name=EMBEDDING_MODEL,
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )

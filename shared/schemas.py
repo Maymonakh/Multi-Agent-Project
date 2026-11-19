@@ -19,3 +19,8 @@ class EvidenceBundle(BaseModel):
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=2, exclude_none=False)
+
+
+class Chunk(BaseModel):
+    page_content: str
+    metadata: dict = Field(default_factory=dict)

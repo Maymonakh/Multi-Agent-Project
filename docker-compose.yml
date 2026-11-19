@@ -9,5 +9,22 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
 
+  app:
+    build: .
+    container_name: multi-agent-app
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./documents:/app/documents
+      - chroma_data:/app/chroma_db
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      - redis
+
 volumes:
   redis_data:
+  chroma_data:
+  hf_cache:

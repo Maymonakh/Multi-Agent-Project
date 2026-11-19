@@ -1,29 +1,26 @@
-"""Semantic answer cache backed by Redis, with a safe in-memory fallback."""
 from __future__ import annotations
 
 import json
-import math
+import time
+
+import numpy as np
 
 
-def cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
+def cosine(a, b) -> float:
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if a.size == 0 or a.shape != b.shape:
         return 0.0
-
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+    norm = np.linalg.norm(a) * np.linalg.norm(b)
+    return float(a @ b / norm) if norm else 0.0
 
 
 class SemanticCache:
-    """Cache similar questions within the same document and conversation scope."""
-
-    KEY = "multi_agent:semantic_cache:v1"
+    KEY = "multi_agent:semantic_cache:v2"
 
     def __init__(
         self,
         embed,
-        threshold: float = 0.92,
+        threshold: float = 0.95,
         redis_url: str | None = None,
         max_items: int = 200,
         ttl_seconds: int = 3600,
@@ -61,9 +58,8 @@ class SemanticCache:
     def _items(self) -> list[dict]:
         if self.redis is not None:
             try:
-                raw_items = self.redis.lrange(self.key, 0, -1)
                 items = []
-                for raw in raw_items:
+                for raw in self.redis.lrange(self.key, 0, -1):
                     try:
                         items.append(json.loads(raw))
                     except (TypeError, json.JSONDecodeError):
@@ -72,48 +68,42 @@ class SemanticCache:
             except Exception as error:
                 print("Redis cache read failed; switching to memory:", error)
                 self.redis = None
-
         return list(self.memory)
 
-    def get(self, question: str, scope: str = "default"):
+    def _fresh(self, item: dict, now: float) -> bool:
+        return not self.ttl_seconds or now - item.get("ts", 0) <= self.ttl_seconds
+
+    def get(self, question: str, scope: str = "default", vector=None):
         if not question or not question.strip():
             return None
 
-        vector = self.embed(question)
-        best_item = None
-        best_score = 0.0
+        vector = vector if vector is not None else self.embed(question)
+        now = time.time()
+        best_item, best_score = None, 0.0
 
         for item in self._items():
-            if item.get("scope", "default") != scope:
+            if item.get("scope", "default") != scope or not self._fresh(item, now):
                 continue
-
             score = cosine(vector, item.get("vector", []))
             if score > best_score:
-                best_item = item
-                best_score = score
+                best_item, best_score = item, score
 
         if best_item is not None and best_score >= self.threshold:
             return best_item.get("value")
-
         return None
 
-    def set(
-        self,
-        question: str,
-        value: dict,
-        scope: str = "default",
-    ) -> None:
+    def set(self, question: str, value: dict, scope: str = "default", vector=None) -> None:
         if not question or not question.strip():
             return
 
         item = {
             "question": question,
-            "vector": self.embed(question),
+            "vector": list(vector if vector is not None else self.embed(question)),
             "value": value,
             "scope": scope,
+            "ts": time.time(),
         }
 
-        # Keep a process-local fallback copy even when Redis is active.
         self.memory.append(item)
         del self.memory[:-self.max_items]
 
@@ -121,8 +111,6 @@ class SemanticCache:
             try:
                 self.redis.rpush(self.key, json.dumps(item, ensure_ascii=False))
                 self.redis.ltrim(self.key, -self.max_items, -1)
-                if self.ttl_seconds:
-                    self.redis.expire(self.key, self.ttl_seconds)
             except Exception as error:
                 print("Redis cache write failed; switching to memory:", error)
                 self.redis = None
@@ -134,5 +122,4 @@ class SemanticCache:
             except Exception as error:
                 print("Redis cache clear failed:", error)
                 self.redis = None
-
         self.memory.clear()

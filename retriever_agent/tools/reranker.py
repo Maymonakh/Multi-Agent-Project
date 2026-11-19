@@ -1,140 +1,77 @@
-
-import json
-
-from retriever_agent.tools.json_utils import parse_evidence_json
+import math
 import re
-from functools import lru_cache
+from collections import defaultdict
 
-from langchain_core.tools import tool
+from retriever_agent.config import RERANKER_MODEL
 
-
-@lru_cache(maxsize=1)
-def _load_model():
-    from sentence_transformers import CrossEncoder
-
-    return CrossEncoder(
-        "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        device="cpu"
-    )
+_models: dict = {}
 
 
-def parse_evidences(evidences):
-    """Parse and validate evidence input."""
-
-    if isinstance(evidences, str):
-        evidences = evidences.strip()
-
-        if not evidences:
-            raise ValueError(
-                "Reranker received empty evidences. "
-                "Semantic Search and Keyword Search results may be missing."
-            )
-
+def _load_model(name: str):
+    """Load once per process. A failed load is remembered (no retry on every question)."""
+    if name not in _models:
         try:
-            evidences = parse_evidence_json(evidences)
-        except ValueError as exc:
-            raise ValueError(
-                f"Reranker received invalid JSON: {exc}"
-            ) from exc
+            from sentence_transformers import CrossEncoder
 
-    if not isinstance(evidences, list):
-        raise TypeError(
-            "Evidences must be a list of dictionaries."
-        )
-
-    for index, item in enumerate(evidences):
-        if not isinstance(item, dict):
-            raise TypeError(
-                f"Evidence at index {index} must be a dictionary."
-            )
-
-    return evidences
+            _models[name] = CrossEncoder(name, device="cpu")
+        except Exception as error:
+            print(f"Reranker model unavailable, using fused ranking only: {error}")
+            _models[name] = None
+    return _models[name]
 
 
-def rerank_evidences(
-    query: str,
-    evidences: list[dict],
-    top_k: int = 20
-):
-    """
-    Deduplicate and rerank candidate evidence.
-    Score is a CrossEncoder logit when available.
-    """
+def _sigmoid(x: float) -> float:
+    x = max(-30.0, min(30.0, float(x)))
+    return 1.0 / (1.0 + math.exp(-x))
 
-    unique = []
-    seen = set()
 
-    for item in evidences:
-        content = re.sub(
-            r"\s+",
-            " ",
-            str(item.get("content", ""))
-        ).strip()
+def _key(item: dict) -> tuple:
+    content = re.sub(r"\s+", " ", str(item.get("content", ""))).strip().casefold()
+    return item.get("document"), item.get("page"), content
 
-        key = (
-            item.get("document"),
-            item.get("page"),
-            content.casefold()
-        )
 
-        if content and key not in seen:
-            seen.add(key)
+def fuse(candidates: list[dict], rrf_k: int = 60) -> list[dict]:
+    """Reciprocal Rank Fusion across retrieval sources + exact de-duplication."""
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    for item in candidates:
+        by_source[item.get("source", "?")].append(item)
 
-            unique.append({
-                **item,
-                "content": content
+    merged: dict[tuple, dict] = {}
+    for items in by_source.values():
+        for rank, item in enumerate(items, start=1):
+            if not str(item.get("content", "")).strip():
+                continue
+            entry = merged.setdefault(_key(item), {
+                "document": item.get("document", "Unknown"),
+                "page": item.get("page"),
+                "content": re.sub(r"[ \t]+", " ", str(item["content"])).strip(),
+                "rrf": 0.0,
             })
+            entry["rrf"] += 1.0 / (rrf_k + rank)
 
-    if not unique:
+    return sorted(merged.values(), key=lambda e: e["rrf"], reverse=True)
+
+
+def rerank(query: str, candidates: list[dict], top_k: int = 20, model_name: str | None = None) -> list[dict]:
+    fused = fuse(candidates)[: max(1, top_k)]
+    if not fused:
         return []
 
-    try:
-        scores = _load_model().predict(
-            [
-                [query, item["content"]]
-                for item in unique
-            ]
-        )
+    model = _load_model(model_name or RERANKER_MODEL)
+    scores = None
+    if model is not None:
+        try:
+            scores = [_sigmoid(s) for s in model.predict([[query, item["content"]] for item in fused])]
+        except Exception as error:
+            print("Reranker prediction failed, using fused ranking:", error)
 
-        for item, score in zip(unique, scores):
-            item["score"] = float(score)
+    if scores is None:
+        best = fused[0]["rrf"] or 1.0
+        scores = [item["rrf"] / best for item in fused]
 
-    except Exception:
-        # Offline fallback:
-        # Preserve the first-stage similarity/BM25 score.
-        for item in unique:
-            item["score"] = float(
-                item.get("score", 0.0)
-            )
-
-    unique.sort(
-        key=lambda item: item["score"],
-        reverse=True
-    )
-
-    return unique[:max(1, top_k)]
-
-
-@tool
-def reranker(
-    query: str,
-    evidences: str,
-    top_k: int = 20
-) -> str:
-    """
-    Rerank candidate evidence against the query
-    using a CrossEncoder model.
-    """
-
-    parsed = parse_evidences(evidences)
-
-    ranked = rerank_evidences(
-        query=query,
-        evidences=parsed,
-        top_k=top_k
-    )
-
-    return json.dumps(
-        ranked,
-        ensure_ascii=False
-    )
+    ranked = [
+        {"document": item["document"], "page": item["page"], "score": float(score), "content": item["content"]}
+        for item, score in zip(fused, scores)
+    ]
+    ranked.sort(key=lambda e: e["score"], reverse=True)
+    return ranked

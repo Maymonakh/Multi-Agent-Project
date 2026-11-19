@@ -1,5 +1,7 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 from shared.schemas import EvidenceBundle
 
 
@@ -11,8 +13,34 @@ class Metric(BaseModel):
     page: Optional[int] = None   # needed for citations
 
 
+def _to_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip().replace(",", "").rstrip("%").strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            return float(text)
+    return None
+
+
 class AnalystDecision(BaseModel):
     """Structured decision returned by the Analyst LLM."""
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _keep_numeric_metrics(cls, items):
+        kept = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                kept.append(item)
+                continue
+            number = _to_number(item.get("value"))
+            if number is not None:
+                kept.append({**item, "value": number})
+        return kept
+
     enough_evidence: bool
     missing_query: str = ""
     metrics: list[Metric] = Field(default_factory=list)
