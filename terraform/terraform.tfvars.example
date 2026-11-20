@@ -1,0 +1,30 @@
+# Copy this file to terraform.tfvars and change the values you need.
+# Every variable has a default, so `terraform plan` also works without this file.
+
+project_name = "multi-agent-rag"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+# true  = no AWS account needed (use this for terraform init / validate / plan)
+# false = real deployment (needs AWS credentials)
+offline_mode = true
+
+# Network
+vpc_cidr           = "10.0.0.0/16"
+public_subnet_cidr = "10.0.1.0/24"
+allowed_app_cidrs  = ["0.0.0.0/0"] # restrict to your own IP, for example ["203.0.113.10/32"]
+allowed_ssh_cidrs  = []            # empty = SSH closed, use Session Manager
+
+# Server (replace the placeholder AMI before a real deployment, see README)
+ami_id              = "ami-0123456789abcdef0"
+instance_type       = "t3.xlarge"
+key_pair_name       = null
+root_volume_size_gb = 40
+data_volume_size_gb = 60
+
+# Application
+container_image_tag = "latest"
+
+tags = {
+  Owner = "your-team"
+}
