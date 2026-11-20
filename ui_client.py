@@ -30,7 +30,7 @@ class ApiClient:
         self.api_key = api_key if api_key is not None else os.getenv("API_KEY", "")
         self.timeout = timeout
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, raw: bool = False, **kwargs):
         headers = {"X-API-Key": self.api_key} if self.api_key else {}
         try:
             response = requests.request(method, self.base_url + path, headers=headers,
@@ -42,6 +42,8 @@ class ApiClient:
 
         if response.status_code >= 400:
             raise ApiClientError(response.status_code, _detail(response))
+        if raw:
+            return response
         return None if response.status_code == 204 else response.json()
 
     # ---- system ----
@@ -77,3 +79,31 @@ class ApiClient:
             files={"image": (filename, data)},
             data={"question": question, "history": json.dumps((history or [])[-20:])},
         )
+
+    # ---- voice (Task 5, point 2) ----
+    def transcribe(self, filename: str, data: bytes, language: str | None = None) -> dict:
+        """Audio -> {"text": ..., "language": ...}"""
+        return self._request("POST", "/voice/transcribe", files={"file": (filename, data)},
+                             data={"language": language} if language else None)
+
+    def voice_ask(self, filename: str, data: bytes, history: list[dict] | None = None,
+                  language: str | None = None) -> dict:
+        """Audio -> {"transcript", "answer", "cached", "analysis"} in one call."""
+        form = {"history": json.dumps((history or [])[-20:])}
+        if language:
+            form["language"] = language
+        return self._request("POST", "/voice/ask", files={"file": (filename, data)}, data=form)
+
+    # ---- report generator agent (Task 5, point 4) ----
+    def report_options(self) -> dict:
+        return self._request("GET", "/report/options")
+
+    def report(self, question: str, answer: str, analysis: dict | None = None,
+               extra_sections: list[dict] | None = None, style: str = "",
+               preset: str = "professional", title: str = "") -> tuple[bytes, bool]:
+        """Returns (pdf_bytes, agent_was_used)."""
+        response = self._request("POST", "/report", raw=True, json={
+            "question": question, "answer": answer, "analysis": analysis or {},
+            "extra_sections": extra_sections or [], "style": style, "preset": preset, "title": title,
+        })
+        return response.content, response.headers.get("X-Agent-Used") == "true"

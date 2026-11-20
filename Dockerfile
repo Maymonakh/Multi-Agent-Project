@@ -20,7 +20,7 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/documents /app/chroma_db
+RUN mkdir -p /app/documents /app/chroma_db /app/reports
 
 EXPOSE 8000
 

@@ -19,6 +19,7 @@ services:
       - "8000:8000"
     volumes:
       - ./documents:/app/documents
+      - ./reports:/app/reports
       - chroma_data:/app/chroma_db
       - hf_cache:/root/.cache/huggingface
     depends_on:

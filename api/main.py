@@ -160,6 +160,11 @@ def create_app(pipeline_getter=None, engine_getter=None) -> FastAPI:
             pipeline_getter(), engine_getter(), question, data, services.parse_history(history)
         )
 
+    # ---- Task 5: voice query + report generator (same API-key protection as the rest) ----
+    from routers import report as report_router, voice as voice_router
+    app.include_router(voice_router.router, dependencies=protected)
+    app.include_router(report_router.router, dependencies=protected)
+
     return app
 
 
