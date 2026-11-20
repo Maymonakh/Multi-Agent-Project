@@ -18,7 +18,7 @@ from retriever_agent.tools.keyword_search import BM25Index
 from shared.schemas import Chunk
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
-INCOMING_DIR = ".incoming"     
+INCOMING_DIR = ".incoming"      # uploads wait here until they were indexed successfully
 
 
 class Snapshot(NamedTuple):
@@ -53,6 +53,7 @@ class DocumentStore:
         self._version = ""
         self._hash_memo: dict = {}
 
+    # ---- backends (imported lazily so importing this module stays cheap) ----
     def _backends(self):
         if self._prepare_file is None:
             from retriever_agent.document_loader import prepare_documents, prepare_documents_from_files
@@ -63,6 +64,7 @@ class DocumentStore:
             self._get_vector_store = lambda: get_vector_store(self.db_path)
             self._create_vector_store = create_vector_store
 
+    # ---- files / versioning ----
     def _document_files(self) -> list[Path]:
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         return sorted(
@@ -98,6 +100,7 @@ class DocumentStore:
         self._manifest.parent.mkdir(parents=True, exist_ok=True)
         self._manifest.write_text(json.dumps({"signature": signature}, indent=2), encoding="utf-8")
 
+    # ---- lifecycle ----
     def initialize(self) -> None:
         if self._ready:
             return
@@ -141,6 +144,7 @@ class DocumentStore:
         self._index = BM25Index(chunks)
         self._version = signature
 
+    # ---- public API ----
     @property
     def version(self) -> str:
         """Changes whenever the documents change (used to scope the answer cache)."""
@@ -165,7 +169,7 @@ class DocumentStore:
             raise ValueError(f"Unsupported file type: {path.suffix}. Supported formats: PDF, DOCX, TXT.")
 
         self.initialize()
-        new_chunks = list(self._prepare_file(path))    
+        new_chunks = list(self._prepare_file(path))      # heavy work outside the lock
         if not new_chunks:
             raise ValueError(f"No readable text was found in {path.name}.")
 
@@ -184,6 +188,27 @@ class DocumentStore:
             self._write_manifest(signature)
 
         return f"Successfully ingested {path.name} ({len(new_chunks)} chunks)."
+
+    def delete_document(self, name: str) -> None:
+        """Remove one document from the folder, the vector store and the keyword index."""
+        if Path(name).name != name:
+            raise ValueError("Invalid document name.")
+
+        self.initialize()
+        with self._lock:
+            if name not in {c.metadata.get("document") for c in self._chunks}:
+                raise KeyError(name)
+
+            self._vector_store.delete(where={"document": name})
+            (self.documents_dir / name).unlink(missing_ok=True)
+
+            signature = self._signature()
+            self._install(
+                [c for c in self._chunks if c.metadata.get("document") != name],
+                self._vector_store,
+                signature,
+            )
+            self._write_manifest(signature)
 
     def incoming_path(self, filename: str) -> Path:
         """Where an upload should be written before `ingest()`."""

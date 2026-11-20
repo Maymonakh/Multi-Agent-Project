@@ -1,62 +1,102 @@
 from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
 
-from orchestrator import ask, clear_cache, get_pipeline
+from ui_client import ApiClient, ApiClientError
 
-STEP_LABELS = {
-    "rewrite": "Understanding the question",
-    "cache_lookup": "Checking the semantic cache",
-    "retrieve": "Retriever Agent: searching the documents",
-    "collect": "Collecting evidence",
-    "analyst": "Analyst Agent: checking the evidence",
-    "followup": "Analyst asked the Retriever for more evidence",
-    "finalize": "Analyst tools: tables, comparison, calculations",
-    "answer": "Answer Agent: writing the answer",
-    "cache_store": "Saving to cache",
-}
+load_dotenv()
+
+IMAGE_TYPES = ["png", "jpg", "jpeg", "webp", "bmp", "tiff"]
 
 st.set_page_config(page_title="Chat with your documents", page_icon="📚")
 st.title("Chat with your documents")
-st.caption("Upload PDF, DOCX, or TXT files and ask questions grounded in their content.")
+st.caption("Upload PDF, DOCX, TXT or images (OCR) and ask questions grounded in their content.")
 
-store = get_pipeline().store
+
+@st.cache_resource
+def get_client() -> ApiClient:
+    return ApiClient()
+
+
+client = get_client()
+
+
+def show_reply(reply: dict):
+    st.markdown(reply["answer"])
+    if reply.get("cached"):
+        st.caption("Answer retrieved from semantic cache.")
+    if reply.get("ocr_text"):
+        with st.expander("Text read from the image"):
+            st.text(reply["ocr_text"])
+    if reply.get("analysis"):
+        with st.expander("Analysis details"):
+            st.json(reply["analysis"])
+    st.caption(f"{reply['elapsed_ms'] / 1000:.1f}s")
+
 
 with st.sidebar:
     st.header("Documents")
+
+    try:
+        health = client.health()
+        st.caption(f"API connected · OCR: {health['ocr_engine']}")
+    except ApiClientError as error:
+        st.error(error.detail)
+        st.stop()
+
     uploaded_files = st.file_uploader(
-        "Upload PDF, DOCX or TXT",
-        type=["pdf", "docx", "txt"],
+        "Upload PDF, DOCX, TXT or an image",
+        type=["pdf", "docx", "txt"] + IMAGE_TYPES,
         accept_multiple_files=True,
     )
 
     if uploaded_files and st.button("Process documents", type="primary"):
         successful = 0
-
         for uploaded_file in uploaded_files:
-            safe_name = Path(uploaded_file.name).name
-            incoming = store.incoming_path(safe_name)
-
+            name = Path(uploaded_file.name).name
+            is_image = Path(name).suffix.lower().lstrip(".") in IMAGE_TYPES
             try:
-                incoming.write_bytes(uploaded_file.getbuffer())
-                st.write(store.ingest(incoming))
+                if is_image:
+                    result = client.upload_image(name, uploaded_file.getvalue())
+                    with st.expander(f"Text read from {name}"):
+                        st.text(result["ocr_text"])
+                else:
+                    result = client.upload_document(name, uploaded_file.getvalue())
+                st.write(result["message"])
                 successful += 1
-            except Exception as error:
-                incoming.unlink(missing_ok=True)
-                st.error(f"Could not process {safe_name}: {error}")
-
+            except ApiClientError as error:
+                st.error(f"Could not process {name}: {error.detail}")
         if successful:
-            clear_cache()
             st.success(f"Processed {successful} document(s).")
 
     st.divider()
-    names = store.document_names()
+    try:
+        names = client.documents()
+    except ApiClientError as error:
+        names = []
+        st.error(error.detail)
+
     if names:
         st.caption("Indexed documents")
         for name in names:
-            st.write(f"• {name}")
+            left, right = st.columns([5, 1])
+            left.write(f"• {name}")
+            if right.button("🗑", key=f"delete_{name}", help=f"Delete {name}"):
+                try:
+                    client.delete_document(name)
+                    st.rerun()
+                except ApiClientError as error:
+                    st.error(error.detail)
     else:
         st.caption("No documents indexed yet.")
+
+    if st.button("Clear answer cache"):
+        try:
+            client.clear_cache()
+            st.success("Cache cleared.")
+        except ApiClientError as error:
+            st.error(error.detail)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -65,33 +105,34 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-question = st.chat_input("Ask a question about your documents")
 
-if question:
-    history = list(st.session_state.messages)
-    st.session_state.messages.append({"role": "user", "content": question})
+def ask_and_show(display_text: str, call):
+    """`call(history)` performs the API request; history = previous turns only."""
+    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
+    st.session_state.messages.append({"role": "user", "content": display_text})
 
     with st.chat_message("user"):
-        st.markdown(question)
+        st.markdown(display_text)
 
     with st.chat_message("assistant"):
         try:
-            with st.status("Working...", expanded=False) as status:
-                def on_step(node: str, update: dict):
-                    status.update(label=STEP_LABELS.get(node, node))
+            with st.spinner("Searching documents and preparing an answer..."):
+                reply = call(history)
+            show_reply(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply["answer"]})
+        except ApiClientError as error:
+            st.error(error.detail)
 
-                reply = ask(question, history, on_step=on_step)
-                status.update(label="Done", state="complete")
 
-            st.markdown(reply.answer)
+with st.expander("Ask with an image"):
+    image_file = st.file_uploader("Image with text", type=IMAGE_TYPES, key="ask_image")
+    image_question = st.text_input("Question (optional: empty = the text in the image is the question)")
+    if image_file and st.button("Ask about this image"):
+        ask_and_show(
+            f"📷 {image_question or image_file.name}",
+            lambda history: client.ask_image(image_file.name, image_file.getvalue(), image_question, history),
+        )
 
-            if reply.cached:
-                st.caption("Answer retrieved from semantic cache.")
-
-            if reply.analysis:
-                with st.expander("Analysis details"):
-                    st.json(reply.analysis)
-
-            st.session_state.messages.append({"role": "assistant", "content": reply.answer})
-        except Exception as error:
-            st.error(f"Something went wrong: {error}")
+question = st.chat_input("Ask a question about your documents")
+if question:
+    ask_and_show(question, lambda history: client.ask(question, history))

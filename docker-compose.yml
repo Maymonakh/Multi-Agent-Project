@@ -9,20 +9,34 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
 
-  app:
+  api:
     build: .
-    container_name: multi-agent-app
+    container_name: multi-agent-api
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
       - ./documents:/app/documents
       - chroma_data:/app/chroma_db
       - hf_cache:/root/.cache/huggingface
     depends_on:
       - redis
+
+  ui:
+    build: .
+    container_name: multi-agent-ui
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    environment:
+      API_URL: http://api:8000
+      API_KEY: ${API_KEY:-}
+    ports:
+      - "8501:8501"
+    healthcheck:
+      disable: true
+    depends_on:
+      - api
 
 volumes:
   redis_data:

@@ -26,6 +26,7 @@ from shared.schemas import Chunk, Evidence
 reranker_module._models[reranker_module.RERANKER_MODEL] = None   # no model download in tests
 
 
+# ----------------------------------------------------------------------------- fakes
 def chunk(doc, page, text):
     return Chunk(page_content=text, metadata={"document": doc, "page": page})
 
@@ -130,7 +131,7 @@ def make_pipeline(llm, store=None):
     return Pipeline(store or FakeStore(CORPUS), cache, llm=llm), cache
 
 
-# tests
+# ------------------------------------------------------------------------------ tests
 def test_metadata_filter():
     docs = ["paper_A.pdf", "paper_B.pdf", "notes.txt"]
     f = detect_filters("According to paper A, page 3, what is the accuracy?", docs)
@@ -154,7 +155,7 @@ def test_bm25():
     only_b = index.search("CNN", k=5, filters={"documents": ["paper_B.pdf"], "page": None})
     assert [h["document"] for h in only_b] == ["paper_B.pdf"]
     wrong_page = index.search("CNN", k=5, filters={"documents": ["paper_B.pdf"], "page": 99})
-    assert len(wrong_page) == 3      
+    assert len(wrong_page) == 3        # empty filter result falls back instead of hiding everything
     assert index.search("rag retraining", k=1)[0]["page"] is None
     assert BM25Index([]).search("anything") == []
     print("2 keyword search OK")
@@ -164,11 +165,11 @@ def test_reranker_and_selector():
     cands = [
         {"document": "A", "page": 1, "content": "x y", "score": 0.9, "source": "semantic"},
         {"document": "B", "page": 1, "content": "z", "score": 0.5, "source": "semantic"},
-        {"document": "B", "page": 1, "content": "z", "score": 7.0, "source": "keyword"},   
-        {"document": "C", "page": 1, "content": "  ", "score": 1.0, "source": "keyword"}, 
+        {"document": "B", "page": 1, "content": "z", "score": 7.0, "source": "keyword"},   # duplicate
+        {"document": "C", "page": 1, "content": "  ", "score": 1.0, "source": "keyword"},  # empty
     ]
     ranked = reranker_module.rerank("q", cands)
-    assert [r["document"] for r in ranked] == ["B", "A"]   
+    assert [r["document"] for r in ranked] == ["B", "A"]        # B found by both sources wins (RRF)
     assert all(0 <= r["score"] <= 1 for r in ranked)
 
     class FakeCE:
@@ -200,13 +201,14 @@ def test_feedback_loop_and_cache():
             enough_evidence=True, reasoning="3 papers", similarities=["All test a CNN"],
             differences=["B is higher than A"],
             metrics=[Metric(name="CNN acc", document="paper_A.pdf", value=92, page=1),
-                     Metric(name="CNN acc", document="paper_B.pdf", value=95),   
+                     Metric(name="CNN acc", document="paper_B.pdf", value=95),       # page missing on purpose
                      Metric(name="CNN acc", document="paper_C.pdf", value=89, page=3)]),
     ])
     pipeline, cache = make_pipeline(llm)
     steps = []
     reply = pipeline.ask("Compare CNN accuracy of paper A", on_step=lambda n, u: steps.append(n))
 
+    # graph went through the feedback loop exactly once
     assert steps.count("retrieve") == 2 and steps.count("followup") == 1 and steps.count("analyst") == 2
     assert steps[:2] == ["rewrite", "cache_lookup"] and steps[-1] == "cache_store"
     calc = reply.analysis["calculations"]["CNN acc"]
@@ -224,6 +226,20 @@ def test_feedback_loop_and_cache():
     pipeline.store.version = "v2"            # documents changed -> cached answer is not reused
     assert pipeline.ask("Compare CNN accuracy of paper A").cached is False
     print("5 feedback loop + cache OK")
+
+
+def test_stream_events():
+    pipeline, _ = make_pipeline(FakeLLM([AnalystDecision(enough_evidence=True, reasoning="ok",
+                                         metrics=[Metric(name="acc", document="paper_A.pdf", value=92, page=1)])],
+                                        answer="CNN is 92 [1]."))
+    events = list(pipeline.stream("CNN accuracy of paper A"))
+    kinds = [e[0] for e in events]
+    assert kinds[:-1] == ["step"] * (len(events) - 1) and kinds[-1] == "reply"
+    nodes = [e[1] for e in events if e[0] == "step"]
+    assert nodes == ["rewrite", "cache_lookup", "retrieve", "collect", "analyst", "finalize", "answer", "cache_store"]
+    assert "(paper_A.pdf, page 1)" in events[-1][1].answer
+    assert list(pipeline.stream("  "))[0][1].answer == "Please enter a question."
+    print("6b stream events OK")
 
 
 def test_loop_limits():
@@ -352,6 +368,19 @@ def test_document_store():
         except ValueError:
             pass
         assert "empty.txt" not in s2.document_names() and not (docs / "empty.txt").exists()
+
+        s2.delete_document("b.txt")                       # delete: file, vectors and keyword index
+        assert s2.document_names() == ["a.txt"] and not (docs / "b.txt").exists()
+        assert s2.snapshot().keyword_index.search("gamma") == []
+        for bad_name, error in [("nope.txt", KeyError), ("../a.txt", ValueError)]:
+            try:
+                s2.delete_document(bad_name)
+                raise AssertionError(bad_name)
+            except error:
+                pass
+        incoming = s2.incoming_path("b.txt")
+        incoming.write_text("gamma replaced")
+        s2.ingest(incoming)                               # put it back for the restart check below
 
         s3 = new_store()                                  # restart after ingest: still no re-parse
         before = calls["prepare_files"]
