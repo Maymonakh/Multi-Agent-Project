@@ -21,3 +21,7 @@ langchain-chroma>=0.2
 langchain-huggingface>=0.1
 langchain-text-splitters>=0.3
 langchain-openrouter
+reportlab>=4.0
+faster-whisper>=1.0
+arabic-reshaper>=3.0
+python-bidi>=0.4
