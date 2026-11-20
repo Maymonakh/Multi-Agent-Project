@@ -97,7 +97,7 @@ class Pipeline:
     ):
         self.store = store
         self.cache = cache
-        self.llm = llm                   
+        self.llm = llm                 
         self.max_loops = max_loops
         self.retriever = build_retriever_graph(store)
         self.graph = self._build()
@@ -181,9 +181,9 @@ class Pipeline:
     @staticmethod
     def _after_collect(state: PipelineState):
         if not state.get("evidences"):
-            return "finalize"                        
+            return "finalize"                       
         if state["loops"] > 0 and state.get("new_count", 0) == 0:
-            return "finalize"                     
+            return "finalize"                   
         return "analyst"
 
     @staticmethod
@@ -214,15 +214,11 @@ class Pipeline:
         graph.add_edge("cache_store", END)
         return graph.compile()
 
-    def ask(
-        self,
-        question: str,
-        chat_history: list | None = None,
-        on_step: Callable[[str, dict], None] | None = None,
-    ) -> Reply:
-        """Run the graph. `on_step(node_name, update)` is called after every node (progress UI)."""
+    def stream(self, question: str, chat_history: list | None = None):
+        """Generator. Yields ("step", node_name, update) after every node, then ("reply", Reply)."""
         if not question or not question.strip():
-            return Reply(answer="Please enter a question.")
+            yield ("reply", Reply(answer="Please enter a question."))
+            return
 
         final: dict = {}
         for chunk in self.graph.stream(
@@ -230,15 +226,31 @@ class Pipeline:
             stream_mode="updates",
         ):
             for node, update in chunk.items():
-                final.update(update or {})
-                if on_step:
-                    on_step(node, update or {})
+                update = update or {}
+                final.update(update)
+                yield ("step", node, update)
 
-        return Reply(
+        yield ("reply", Reply(
             answer=final["answer"],
             cached=bool(final.get("cached")),
             analysis=final.get("analysis_data", {}),
-        )
+        ))
+
+    def ask(
+        self,
+        question: str,
+        chat_history: list | None = None,
+        on_step: Callable[[str, dict], None] | None = None,
+    ) -> Reply:
+        """Run the graph. `on_step(node_name, update)` is called after every node (progress UI)."""
+        reply = None
+        for event in self.stream(question, chat_history):
+            if event[0] == "step":
+                if on_step:
+                    on_step(event[1], event[2])
+            else:
+                reply = event[1]
+        return reply
 
 
 _pipeline: Pipeline | None = None
@@ -274,4 +286,4 @@ def clear_cache() -> None:
     try:
         get_pipeline().cache.clear()
     except Exception as error:
-        print("Could not clear semantic cache:", error)  
+        print("Could not clear semantic cache:", error) 

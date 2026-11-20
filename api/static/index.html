@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat with your documents</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #657084; --line: #e2e6ec;
+    --accent: #2563eb; --accent-ink: #ffffff; --user: #e8f0fe; --ok: #16a34a; --warn: #b45309; --bad: #dc2626;
+    --code: #eef1f5; --shadow: 0 1px 2px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1420; --panel: #171e2e; --ink: #e6eaf2; --muted: #93a0b8; --line: #263049;
+      --accent: #5b8cff; --accent-ink: #0b1020; --user: #1c2a4a; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+      --code: #0f1626; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Arabic", Tahoma, sans-serif; }
+  button { font: inherit; cursor: pointer; }
+  .app { display: grid; grid-template-columns: 300px 1fr; height: 100%; }
+  @media (max-width: 800px) { .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } }
+
+  /* sidebar */
+  aside { background: var(--panel); border-inline-end: 1px solid var(--line); padding: 18px 16px;
+          display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+  @media (max-width: 800px) { aside { max-height: 38vh; border-inline-end: 0; border-bottom: 1px solid var(--line); } }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .1px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 16px 12px; text-align: center;
+          color: var(--muted); font-size: 13px; transition: border-color .15s, background .15s; cursor: pointer; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .drop b { color: var(--ink); }
+  ul.docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  ul.docs li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px;
+               border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+  ul.docs li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 13px; }
+  .icon-btn { background: none; border: 0; color: var(--muted); padding: 2px 6px; border-radius: 6px; }
+  .icon-btn:hover { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+  .links { margin-top: auto; display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+  .links a, .links button { color: var(--muted); background: none; border: 0; padding: 0; text-decoration: underline; }
+  #notes { font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  #notes .err { color: var(--bad); } #notes .ok { color: var(--ok); }
+
+  /* chat */
+  main { display: flex; flex-direction: column; min-height: 0; }
+  #log { flex: 1; overflow: auto; padding: 22px clamp(14px, 4vw, 48px); display: flex; flex-direction: column; gap: 16px; }
+  .hint { margin: auto; text-align: center; color: var(--muted); max-width: 440px; }
+  .hint h3 { color: var(--ink); margin: 0 0 6px; font-size: 18px; }
+  .msg { max-width: min(760px, 100%); }
+  .msg.user { align-self: flex-end; background: var(--user); padding: 10px 14px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; }
+  .msg.bot { align-self: flex-start; width: min(760px, 100%); background: var(--panel); border: 1px solid var(--line);
+             border-radius: 14px 14px 14px 4px; padding: 12px 16px; box-shadow: var(--shadow); }
+  .steps { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
+  .steps li { display: flex; gap: 8px; align-items: baseline; }
+  .steps .tick { color: var(--ok); width: 14px; flex: none; text-align: center; }
+  .steps li.run .tick { color: var(--accent); animation: pulse 1s infinite; }
+  .steps .d { opacity: .85; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .answer p { margin: 0 0 .7em; } .answer p:last-child { margin-bottom: 0; }
+  .answer ul, .answer ol { margin: 0 0 .7em; padding-inline-start: 1.4em; }
+  .answer code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+  .answer table { border-collapse: collapse; margin: 0 0 .8em; font-size: 14px; display: block; overflow-x: auto; }
+  .answer th, .answer td { border: 1px solid var(--line); padding: 5px 10px; text-align: start; }
+  .answer th { background: var(--code); }
+  .answer h3, .answer h4 { margin: .6em 0 .3em; }
+  .meta { margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+  .badge { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+  .badge.cache { color: var(--warn); border-color: currentColor; }
+  details { margin-top: 8px; font-size: 13px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  details pre { background: var(--code); padding: 10px; border-radius: 8px; overflow: auto; max-height: 280px; font-size: 12px; }
+  .error { color: var(--bad); }
+
+  /* composer */
+  form { padding: 12px clamp(14px, 4vw, 48px) 18px; display: flex; gap: 8px; align-items: flex-end; }
+  .box { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px 10px; box-shadow: var(--shadow); }
+  .box:focus-within { border-color: var(--accent); }
+  textarea { width: 100%; border: 0; outline: 0; resize: none; background: transparent; color: inherit; font: inherit; max-height: 160px; }
+  .tools { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .tools button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 2px 9px; }
+  .tools button:hover { color: var(--ink); border-color: var(--muted); }
+  .send { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 12px; padding: 0 20px; height: 44px; font-weight: 600; }
+  .send:disabled { opacity: .5; cursor: default; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  textarea:focus-visible { outline: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>📚 Chat with your documents</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></div>
+
+    <section>
+      <h2>Add documents</h2>
+      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload documents">
+        <b>Click or drop files</b><br>PDF, DOCX, TXT, or images (OCR)
+      </div>
+      <input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.txt,image/png,image/jpeg,image/webp,image/bmp,image/tiff,image/gif">
+      <div id="notes" aria-live="polite"></div>
+    </section>
+
+    <section>
+      <h2>Indexed documents</h2>
+      <ul class="docs" id="docs"></ul>
+    </section>
+
+    <div class="links">
+      <a href="/docs" target="_blank" rel="noopener">API docs</a>
+      <button type="button" id="keyBtn">API key</button>
+      <button type="button" id="clearBtn">New chat</button>
+    </div>
+  </aside>
+
+  <main>
+    <div id="log" aria-live="polite">
+      <div class="hint" id="hint">
+        <h3>Ask about your documents</h3>
+        Answers are grounded in the files on the left and cite their sources.
+        You can also read text from an image and use it as your question.
+      </div>
+    </div>
+
+    <form id="form">
+      <div class="box">
+        <textarea id="q" rows="1" dir="auto" placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)" maxlength="2000"></textarea>
+        <div class="tools">
+          <button type="button" id="imgBtn" title="Read the text from an image and put it in the question">📷 Image → question</button>
+          <input type="file" id="imgInput" hidden accept="image/*">
+          <span id="imgNote"></span>
+        </div>
+      </div>
+      <button class="send" id="send" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif"]);
+const turns = [];              // previous turns sent to the API as conversation context
+let busy = false;
+
+/* ---------- API helper ---------- */
+function getKey() { try { return localStorage.getItem("apiKey") || ""; } catch { return ""; } }
+function setKey(v) { try { localStorage.setItem("apiKey", v); } catch { /* private mode */ } }
+
+async function api(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const key = getKey();
+  if (key) headers.set("X-API-Key", key);
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    const entered = prompt("This server needs an API key:");
+    if (entered) { setKey(entered); return api(path, options); }
+  }
+  return res;
+}
+
+async function errorText(res) {
+  try { const j = await res.json(); return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); }
+  catch { return `${res.status} ${res.statusText}`; }
+}
+
+/* ---------- small markdown renderer (escapes HTML first) ---------- */
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, "$1<em>$2</em>");
+}
+function markdown(src) {
+  const lines = src.replace(/\r/g, "").split("\n");
+  const out = []; let i = 0, para = [];
+  const flush = () => { if (para.length) { out.push("<p>" + para.map(inline).join("<br>") + "</p>"); para = []; } };
+  const isRow = (l) => l.includes("|");
+  const cells = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { flush(); i++; continue; }
+    if (isRow(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      flush();
+      const head = cells(line); i += 2; const rows = [];
+      while (i < lines.length && isRow(lines[i]) && lines[i].trim()) { rows.push(cells(lines[i])); i++; }
+      out.push("<table><thead><tr>" + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>" +
+        rows.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") + "</tbody></table>");
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { flush(); const n = Math.min(4, h[1].length + 2); out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
+    const ul = /^\s*[-*•]\s+/, ol = /^\s*\d+[.)]\s+/;
+    if (ul.test(line) || ol.test(line)) {
+      flush(); const re = ul.test(line) ? ul : ol; const tag = re === ul ? "ul" : "ol"; const items = [];
+      while (i < lines.length && re.test(lines[i])) { items.push(lines[i].replace(re, "")); i++; }
+      out.push(`<${tag}>` + items.map((t) => `<li>${inline(t)}</li>`).join("") + `</${tag}>`);
+      continue;
+    }
+    para.push(line); i++;
+  }
+  flush();
+  return out.join("");
+}
+
+/* ---------- documents ---------- */
+function note(text, kind = "") {
+  const div = document.createElement("div");
+  if (kind) div.className = kind;
+  div.textContent = text;
+  $("notes").appendChild(div);
+  setTimeout(() => div.remove(), kind === "err" ? 12000 : 6000);
+}
+
+async function loadDocs() {
+  try {
+    const res = await api("/documents");
+    if (!res.ok) throw new Error(await errorText(res));
+    const { documents } = await res.json();
+    const ul = $("docs"); ul.replaceChildren();
+    if (!documents.length) {
+      const li = document.createElement("li"); li.className = "empty"; li.style.border = "0";
+      li.textContent = "No documents yet."; ul.appendChild(li);
+    }
+    for (const name of documents) {
+      const li = document.createElement("li");
+      const span = document.createElement("span"); span.textContent = name; span.title = name; span.dir = "auto";
+      const del = document.createElement("button");
+      del.className = "icon-btn"; del.type = "button"; del.textContent = "✕"; del.title = `Delete ${name}`;
+      del.setAttribute("aria-label", `Delete ${name}`);
+      del.onclick = () => removeDoc(name);
+      li.append(span, del); ul.appendChild(li);
+    }
+  } catch (e) { note("Could not load documents: " + e.message, "err"); }
+}
+
+async function removeDoc(name) {
+  if (!confirm(`Delete "${name}" from the index?`)) return;
+  const res = await api("/documents/" + encodeURIComponent(name), { method: "DELETE" });
+  if (!res.ok) note(`Could not delete ${name}: ${await errorText(res)}`, "err");
+  loadDocs(); checkHealth();
+}
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    const ext = file.name.split(".").pop().toLowerCase();
+    const isImage = IMAGE_EXT.has(ext);
+    const form = new FormData();
+    form.append(isImage ? "image" : "file", file);
+    note(`${isImage ? "Reading text from" : "Indexing"} ${file.name}…`);
+    try {
+      const res = await api(isImage ? "/documents/image" : "/documents", { method: "POST", body: form });
+      if (!res.ok) throw new Error(await errorText(res));
+      const j = await res.json();
+      note(isImage ? `${j.document}: ${j.characters} characters read` : j.message, "ok");
+    } catch (e) { note(`${file.name}: ${e.message}`, "err"); }
+  }
+  loadDocs(); checkHealth();
+}
+
+/* ---------- health ---------- */
+async function checkHealth() {
+  try {
+    const res = await fetch("/health");
+    const j = await res.json();
+    $("dot").className = "dot ok";
+    $("statusText").textContent = `Online · ${j.documents} document${j.documents === 1 ? "" : "s"} · OCR: ${j.ocr_engine}`;
+  } catch {
+    $("dot").className = "dot bad"; $("statusText").textContent = "Server unreachable";
+  }
+}
+
+/* ---------- chat ---------- */
+function scrollDown() { const l = $("log"); l.scrollTop = l.scrollHeight; }
+
+function addUser(text) {
+  $("hint")?.remove();
+  const div = document.createElement("div"); div.className = "msg user"; div.dir = "auto"; div.textContent = text;
+  $("log").appendChild(div); scrollDown();
+}
+
+function addBot() {
+  const div = document.createElement("div"); div.className = "msg bot";
+  const steps = document.createElement("ul"); steps.className = "steps";
+  const answer = document.createElement("div"); answer.className = "answer"; answer.dir = "auto";
+  div.append(steps, answer); $("log").appendChild(div); scrollDown();
+  return { div, steps, answer, current: null };
+}
+
+function pushStep(bot, ev) {
+  if (bot.current) { bot.current.classList.remove("run"); bot.current.firstChild.textContent = "✓"; }
+  const li = document.createElement("li"); li.className = "run";
+  const tick = document.createElement("span"); tick.className = "tick"; tick.textContent = "●";
+  const label = document.createElement("span"); label.textContent = ev.label;
+  li.append(tick, label);
+  if (ev.detail) { const d = document.createElement("span"); d.className = "d"; d.textContent = "— " + ev.detail; li.appendChild(d); }
+  bot.steps.appendChild(li); bot.current = li; scrollDown();
+}
+
+function finishSteps(bot) {
+  if (bot.current) { bot.current.classList.remove("run"); bot.current.firstChild.textContent = "✓"; }
+}
+
+function showResult(bot, r) {
+  finishSteps(bot);
+  bot.answer.innerHTML = markdown(r.answer);
+  const meta = document.createElement("div"); meta.className = "meta";
+  if (r.cached) { const b = document.createElement("span"); b.className = "badge cache"; b.textContent = "from cache"; meta.appendChild(b); }
+  const t = document.createElement("span"); t.textContent = (r.elapsed_ms / 1000).toFixed(1) + " s"; meta.appendChild(t);
+  bot.div.appendChild(meta);
+  if (r.analysis && Object.keys(r.analysis).length) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary"); sum.textContent = "Analysis details";
+    const pre = document.createElement("pre"); pre.textContent = JSON.stringify(r.analysis, null, 2);
+    det.append(sum, pre); bot.div.appendChild(det);
+  }
+  scrollDown();
+}
+
+function showError(bot, text) {
+  finishSteps(bot);
+  bot.answer.innerHTML = ""; const p = document.createElement("p"); p.className = "error"; p.textContent = text;
+  bot.answer.appendChild(p);
+}
+
+async function ask(question) {
+  addUser(question);
+  const bot = addBot();
+  const context = turns.slice(-20).map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+  let answer = null;
+
+  try {
+    const res = await api("/ask/stream", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, history: context }),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+
+    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+    const handle = (line) => {
+      if (!line.trim()) return;
+      const ev = JSON.parse(line);
+      if (ev.type === "step") pushStep(bot, ev);
+      else if (ev.type === "result") { answer = ev.answer; showResult(bot, ev); }
+      else if (ev.type === "error") showError(bot, ev.detail);
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n"); buffer = lines.pop();
+      lines.forEach(handle);
+    }
+    buffer += decoder.decode(); handle(buffer);
+  } catch (e) {
+    showError(bot, "Something went wrong: " + e.message);
+  }
+
+  turns.push({ role: "user", content: question });
+  if (answer) turns.push({ role: "assistant", content: answer });
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = $("q").value.trim();
+  if (!question || busy) return;
+  busy = true; $("send").disabled = true; $("q").value = ""; autosize();
+  try { await ask(question); } finally { busy = false; $("send").disabled = false; $("q").focus(); }
+});
+
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("form").requestSubmit(); }
+});
+function autosize() { const q = $("q"); q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 160) + "px"; }
+$("q").addEventListener("input", autosize);
+
+/* image -> question (OCR) */
+$("imgBtn").onclick = () => $("imgInput").click();
+$("imgInput").addEventListener("change", async () => {
+  const file = $("imgInput").files[0]; $("imgInput").value = "";
+  if (!file) return;
+  const form = new FormData(); form.append("image", file);
+  $("imgNote").textContent = "Reading text…";
+  try {
+    const res = await api("/ocr", { method: "POST", body: form });
+    if (!res.ok) throw new Error(await errorText(res));
+    const j = await res.json();
+    const q = $("q"); q.value = (q.value ? q.value.trim() + "\n\n" : "") + j.text.slice(0, 1800);
+    autosize(); q.focus();
+    $("imgNote").textContent = `${j.characters} characters read. Edit if needed, then send.`;
+  } catch (e) { $("imgNote").textContent = "OCR failed: " + e.message; }
+});
+
+/* sidebar controls */
+const drop = $("drop");
+drop.onclick = () => $("fileInput").click();
+drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("fileInput").click(); } };
+$("fileInput").addEventListener("change", () => { uploadFiles([...$("fileInput").files]); $("fileInput").value = ""; });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
+
+$("keyBtn").onclick = () => { const v = prompt("API key (leave empty to clear):", getKey()); if (v !== null) { setKey(v.trim()); loadDocs(); } };
+$("clearBtn").onclick = () => {
+  turns.length = 0; $("log").replaceChildren();
+  const hint = document.createElement("div"); hint.className = "hint"; hint.id = "hint";
+  hint.innerHTML = "<h3>New conversation</h3>Ask about your documents.";
+  $("log").appendChild(hint);
+};
+
+checkHealth(); loadDocs(); setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
